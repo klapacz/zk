@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -13,6 +14,11 @@ func init() {
 	// Register custom SQLite functions.
 	sql.Register("sqlite3_custom", &sqlite.SQLiteDriver{
 		ConnectHook: func(conn *sqlite.SQLiteConn) error {
+			// Foreign keys are connection-local, including connections opened
+			// later by the pool for concurrent readers and writers.
+			if _, err := conn.Exec("PRAGMA foreign_keys = ON", nil); err != nil {
+				return err
+			}
 			if err := conn.RegisterFunc("mention_query", buildMentionQuery, true); err != nil {
 				return err
 			}
@@ -44,18 +50,17 @@ func open(uri string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the database: %w", err)
 	}
-
-	// Make sure that CASCADE statements are properly applied by enabling
-	// foreign keys.
-	_, err = nativeDB.Exec("PRAGMA foreign_keys = ON")
-	if err != nil {
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	if uri == ":memory:" {
+		// Each SQLite in-memory connection owns a separate database.
+		nativeDB.SetMaxOpenConns(1)
+		nativeDB.SetMaxIdleConns(1)
 	}
 
 	db := &DB{nativeDB}
-
-	err = db.migrate()
-	if err != nil {
+	if err = db.migrate(); err != nil {
+		if closeErr := nativeDB.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close the database: %w", closeErr))
+		}
 		return nil, fmt.Errorf("failed to migrate the database: %w", err)
 	}
 
@@ -72,7 +77,7 @@ func (db *DB) Close() error {
 
 // migrate upgrades the SQL schema of the database.
 func (db *DB) migrate() error {
-	err := db.WithTransaction(func(tx Transaction) error {
+	err := db.WithWriteTransaction(func(tx Transaction) error {
 		var version int
 		err := tx.QueryRow("PRAGMA user_version").Scan(&version)
 		if err != nil {

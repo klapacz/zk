@@ -146,16 +146,17 @@ func TestNoteDAOAddExistingNote(t *testing.T) {
 func TestNoteDAOUpdate(t *testing.T) {
 	testNoteDAO(t, func(tx Transaction, dao *NoteDAO) {
 		id, err := dao.Update(core.Note{
-			Path:       "ref/test/a.md",
-			Title:      "Updated note",
-			Lead:       "Updated lead",
-			Body:       "Updated body",
-			RawContent: "Updated raw content",
-			Checksum:   "updated checksum",
-			Metadata:   map[string]any{"updated-key": "updated-value"},
-			WordCount:  42,
-			Created:    time.Date(2019, 11, 20, 20, 32, 56, 0, time.UTC),
-			Modified:   time.Date(2020, 11, 22, 16, 49, 47, 0, time.UTC),
+			Path:                   "ref/test/a.md",
+			Title:                  "Updated note",
+			Lead:                   "Updated lead",
+			Body:                   "Updated body",
+			RawContent:             "Updated raw content",
+			Checksum:               "updated checksum",
+			Metadata:               map[string]any{"updated-key": "updated-value"},
+			WordCount:              42,
+			Created:                time.Date(2024, 6, 7, 0, 0, 0, 0, time.UTC),
+			CreatedFromFrontmatter: true,
+			Modified:               time.Date(2020, 11, 22, 16, 49, 47, 0, time.UTC),
 		})
 		assert.Nil(t, err)
 		assert.Equal(t, id, core.NoteID(6))
@@ -170,10 +171,24 @@ func TestNoteDAOUpdate(t *testing.T) {
 			RawContent: "Updated raw content",
 			Checksum:   "updated checksum",
 			WordCount:  42,
-			Created:    time.Date(2019, 11, 20, 20, 32, 56, 0, time.UTC),
+			Created:    time.Date(2024, 6, 7, 0, 0, 0, 0, time.UTC),
 			Modified:   time.Date(2020, 11, 22, 16, 49, 47, 0, time.UTC),
 			Metadata:   `{"updated-key":"updated-value"}`,
 		})
+	})
+}
+
+func TestNoteDAOUpdatePreservesFallbackCreationDate(t *testing.T) {
+	testNoteDAO(t, func(tx Transaction, dao *NoteDAO) {
+		_, err := dao.Update(core.Note{
+			Path:    "ref/test/a.md",
+			Created: time.Date(2040, 1, 1, 0, 0, 0, 0, time.UTC),
+		})
+		assert.Nil(t, err)
+
+		row, err := queryNoteRow(tx, `path = "ref/test/a.md"`)
+		assert.Nil(t, err)
+		assert.Equal(t, row.Created, time.Date(2019, 11, 20, 20, 32, 56, 0, time.UTC))
 	})
 }
 

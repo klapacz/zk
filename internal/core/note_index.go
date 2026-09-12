@@ -154,13 +154,13 @@ func (t *indexTask) execute(callback func(change paths.DiffChange)) (NoteIndexin
 		return false, nil
 	}
 
-	notebookPath := &NotebookPath{Path: t.path}
-	source := paths.Walk(t.path, t.logger, notebookPath.Filename(), shouldIgnorePath)
-
 	target, err := t.index.IndexedPaths()
 	if err != nil {
 		return stats, fmt.Errorf("finding indexed paths failed: %w", err)
 	}
+
+	notebookPath := &NotebookPath{Path: t.path}
+	source := paths.Walk(t.path, t.logger, notebookPath.Filename(), shouldIgnorePath)
 
 	addedNotes := make([]NoteID, 0)
 	addedPaths := make([]string, 0)
@@ -175,33 +175,48 @@ func (t *indexTask) execute(callback func(change paths.DiffChange)) (NoteIndexin
 		case paths.DiffAdded:
 			stats.AddedCount += 1
 			note, err := t.parser.ParseNoteAt(absPath)
-			if note != nil {
-				// Link update is done afterward on all added notes, for performance reasons
-				var id NoteID
-				id, err = t.index.Add(*note, false)
-				addedNotes = append(addedNotes, id)
-				addedPaths = append(addedPaths, note.Path)
+			if err != nil {
+				t.logger.Err(err)
+				return nil
 			}
-			t.logger.Err(err)
+			if note == nil {
+				return nil
+			}
+
+			// Link update is done afterward on all successfully added notes.
+			id, err := t.index.Add(*note, false)
+			if err != nil {
+				return fmt.Errorf("adding %s: %w", change.Path, err)
+			}
+			addedNotes = append(addedNotes, id)
+			addedPaths = append(addedPaths, note.Path)
 
 		case paths.DiffModified:
 			stats.ModifiedCount += 1
 			note, err := t.parser.ParseNoteAt(absPath)
-			if note != nil {
-				err = t.index.Update(*note)
+			if err != nil {
+				t.logger.Err(err)
+				return nil
 			}
-			t.logger.Err(err)
+			if note == nil {
+				return nil
+			}
+			if err := t.index.Update(*note); err != nil {
+				return fmt.Errorf("updating %s: %w", change.Path, err)
+			}
 
 		case paths.DiffRemoved:
 			stats.RemovedCount += 1
-			err := t.index.Remove(change.Path)
-			t.logger.Err(err)
+			if err := t.index.Remove(change.Path); err != nil {
+				return fmt.Errorf("removing %s: %w", change.Path, err)
+			}
 		}
 
 		return nil
 	})
 	if err != nil {
-		return stats, fmt.Errorf("finding indexed paths failed: %w", err)
+		drainMetadataChannels(source, target)
+		return stats, fmt.Errorf("indexing notes failed: %w", err)
 	}
 
 	err = t.index.BatchUpdateLinks(addedNotes, addedPaths)
@@ -225,6 +240,21 @@ func (t *indexTask) execute(callback func(change paths.DiffChange)) (NoteIndexin
 		return stats, fmt.Errorf("indexing failed: %w", err)
 	}
 	return stats, nil
+}
+
+func drainMetadataChannels(source, target <-chan paths.Metadata) {
+	for source != nil || target != nil {
+		select {
+		case _, open := <-source:
+			if !open {
+				source = nil
+			}
+		case _, open := <-target:
+			if !open {
+				target = nil
+			}
+		}
+	}
 }
 
 // globPrunesDir reports whether the exclude glob lets the whole directory be

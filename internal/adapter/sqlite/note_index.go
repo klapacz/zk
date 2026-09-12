@@ -41,7 +41,7 @@ func NewNoteIndex(notebookPath string, db *DB, logger util.Logger, extension str
 
 // Find implements core.NoteIndex.
 func (ni *NoteIndex) Find(opts core.NoteFindOpts) (notes []core.ContextualNote, err error) {
-	err = ni.commit(func(dao *dao) error {
+	err = ni.read(func(dao *dao) error {
 		notes, err = dao.notes.Find(opts)
 		return err
 	})
@@ -50,7 +50,7 @@ func (ni *NoteIndex) Find(opts core.NoteFindOpts) (notes []core.ContextualNote, 
 
 // FindMinimal implements core.NoteIndex.
 func (ni *NoteIndex) FindMinimal(opts core.NoteFindOpts) (notes []core.MinimalNote, err error) {
-	err = ni.commit(func(dao *dao) error {
+	err = ni.read(func(dao *dao) error {
 		notes, err = dao.notes.FindMinimal(opts)
 		return err
 	})
@@ -78,7 +78,7 @@ func (ni *NoteIndex) findLinkMatch(dao *dao, baseDir string, href string, linkTy
 
 // FindLinksBetweenNotes implements core.NoteIndex.
 func (ni *NoteIndex) FindLinksBetweenNotes(ids []core.NoteID) (links []core.ResolvedLink, err error) {
-	err = ni.commit(func(dao *dao) error {
+	err = ni.read(func(dao *dao) error {
 		links, err = dao.links.FindBetweenNotes(ids)
 		return err
 	})
@@ -87,7 +87,7 @@ func (ni *NoteIndex) FindLinksBetweenNotes(ids []core.NoteID) (links []core.Reso
 
 // FindCollections implements core.NoteIndex.
 func (ni *NoteIndex) FindCollections(kind core.CollectionKind, sorters []core.CollectionSorter) (collections []core.Collection, err error) {
-	err = ni.commit(func(dao *dao) error {
+	err = ni.read(func(dao *dao) error {
 		collections, err = dao.collections.FindAll(kind, sorters)
 		return err
 	})
@@ -95,20 +95,33 @@ func (ni *NoteIndex) FindCollections(kind core.CollectionKind, sorters []core.Co
 }
 
 // IndexedPaths implements core.NoteIndex.
-func (ni *NoteIndex) IndexedPaths() (metadata <-chan paths.Metadata, err error) {
-	err = ni.commit(func(dao *dao) error {
-		metadata, err = dao.notes.Indexed()
-		return err
+func (ni *NoteIndex) IndexedPaths() (<-chan paths.Metadata, error) {
+	items := make([]paths.Metadata, 0)
+	err := ni.read(func(dao *dao) error {
+		metadata, err := dao.notes.Indexed()
+		if err != nil {
+			return err
+		}
+		for item := range metadata {
+			items = append(items, item)
+		}
+		return nil
 	})
 	if err != nil {
-		err = fmt.Errorf("failed to get indexed notes: %w", err)
+		return nil, fmt.Errorf("failed to get indexed notes: %w", err)
 	}
-	return
+
+	metadata := make(chan paths.Metadata, len(items))
+	for _, item := range items {
+		metadata <- item
+	}
+	close(metadata)
+	return metadata, nil
 }
 
 // Add implements core.NoteIndex.
 func (ni *NoteIndex) Add(note core.Note, fixLinks bool) (id core.NoteID, err error) {
-	err = ni.commit(func(dao *dao) error {
+	err = ni.write(func(dao *dao) error {
 		id, err = dao.notes.Add(note)
 		if err != nil {
 			return err
@@ -143,7 +156,7 @@ func (ni *NoteIndex) fixExistingLinks(dao *dao, id core.NoteID, path string) err
 // BatchUpdateLinks will go over all indexed links and update their target to
 // one of the given ids if its path better matches their current targetPath.
 func (ni *NoteIndex) BatchUpdateLinks(ids []core.NoteID, paths []string) error {
-	return ni.commit(func(dao *dao) error {
+	return ni.write(func(dao *dao) error {
 		return ni.batchFixExistingLinks(dao, ids, paths)
 	})
 }
@@ -259,7 +272,7 @@ func (ni *NoteIndex) relNotebookPath(baseDir string, href string) (string, error
 
 // Update implements core.NoteIndex.
 func (ni *NoteIndex) Update(note core.Note) error {
-	err := ni.commit(func(dao *dao) error {
+	err := ni.write(func(dao *dao) error {
 		id, err := dao.notes.Update(note)
 		if err != nil {
 			return err
@@ -333,7 +346,7 @@ func (ni *NoteIndex) resolveLinkNoteIDs(dao *dao, sourceID core.NoteID, links []
 
 // Remove implements core.NoteIndex
 func (ni *NoteIndex) Remove(path string) error {
-	err := ni.commit(func(dao *dao) error {
+	err := ni.write(func(dao *dao) error {
 		return dao.notes.Remove(path)
 	})
 	if err != nil {
@@ -344,18 +357,20 @@ func (ni *NoteIndex) Remove(path string) error {
 
 // Commit implements core.NoteIndex.
 func (ni *NoteIndex) Commit(transaction func(idx core.NoteIndex) error) error {
-	return ni.commit(func(dao *dao) error {
+	return ni.write(func(dao *dao) error {
 		return transaction(&NoteIndex{
-			db:     ni.db,
-			dao:    dao,
-			logger: ni.logger,
+			notebookPath: ni.notebookPath,
+			db:           ni.db,
+			dao:          dao,
+			logger:       ni.logger,
+			extension:    ni.extension,
 		})
 	})
 }
 
 // NeedsReindexing implements core.NoteIndex.
 func (ni *NoteIndex) NeedsReindexing() (needsReindexing bool, err error) {
-	err = ni.commit(func(dao *dao) error {
+	err = ni.read(func(dao *dao) error {
 		res, err := dao.metadata.Get(reindexingRequiredKey)
 		needsReindexing = (res == "true")
 		return err
@@ -365,7 +380,7 @@ func (ni *NoteIndex) NeedsReindexing() (needsReindexing bool, err error) {
 
 // SetNeedsReindexing implements core.NoteIndex.
 func (ni *NoteIndex) SetNeedsReindexing(needsReindexing bool) error {
-	return ni.commit(func(dao *dao) error {
+	return ni.write(func(dao *dao) error {
 		value := "false"
 		if needsReindexing {
 			value = "true"
@@ -375,18 +390,29 @@ func (ni *NoteIndex) SetNeedsReindexing(needsReindexing bool) error {
 	})
 }
 
-func (ni *NoteIndex) commit(transaction func(dao *dao) error) error {
+func (ni *NoteIndex) read(transaction func(dao *dao) error) error {
 	if ni.dao != nil {
 		return transaction(ni.dao)
-	} else {
-		return ni.db.WithTransaction(func(tx Transaction) error {
-			dao := dao{
-				notes:       NewNoteDAO(tx, ni.logger, ni.extension),
-				links:       NewLinkDAO(tx, ni.logger),
-				collections: NewCollectionDAO(tx, ni.logger),
-				metadata:    NewMetadataDAO(tx),
-			}
-			return transaction(&dao)
-		})
+	}
+	return ni.db.WithTransaction(func(tx Transaction) error {
+		return transaction(ni.newDAO(tx))
+	})
+}
+
+func (ni *NoteIndex) write(transaction func(dao *dao) error) error {
+	if ni.dao != nil {
+		return transaction(ni.dao)
+	}
+	return ni.db.WithWriteTransaction(func(tx Transaction) error {
+		return transaction(ni.newDAO(tx))
+	})
+}
+
+func (ni *NoteIndex) newDAO(tx Transaction) *dao {
+	return &dao{
+		notes:       NewNoteDAO(tx, ni.logger, ni.extension),
+		links:       NewLinkDAO(tx, ni.logger),
+		collections: NewCollectionDAO(tx, ni.logger),
+		metadata:    NewMetadataDAO(tx),
 	}
 }

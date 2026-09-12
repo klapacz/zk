@@ -1,0 +1,44 @@
+$ cd blank
+
+$ printf '%s\n' '# Hub' '[Apple](apple.md)' '[Banana](banana.md)' > hub.md
+$ printf '%s\n' '# Apple' 'quasar matching note' '[Hub](hub.md)' '[Deep](deep.md)' > apple.md
+$ printf '%s\n' '# Banana' 'Not a search result' '[Hub](hub.md)' > banana.md
+$ printf '%s\n' '# Deep' 'quasar indirect note' '[Apple](apple.md)' > deep.md
+$ printf '%s\n' '# Outside' 'quasar unlinked note' > outside.md
+
+# Both filters work alone, and together return their intersection.
+$ zk list -qfpath --sort=path --match=quasar
+>apple.md
+>deep.md
+>outside.md
+$ zk list -qfpath --sort=path --linked-by=hub.md
+>apple.md
+>banana.md
+$ zk list -qfpath --match=quasar --linked-by=hub.md
+>apple.md
+$ zk list -qfpath --match=quasar --link-to=hub.md
+>apple.md
+$ zk list -qfpath --match=quasar --linked-by=hub.md --match-strategy=exact
+>apple.md
+
+# Recursive traversal still honors the search and distance limit.
+$ zk list -qfpath --sort=path --match=quasar --linked-by=hub.md --recursive
+>apple.md
+>deep.md
+$ zk list -qfpath --sort=path --match=quasar --link-to=hub.md --recursive
+>apple.md
+>deep.md
+$ zk list -qfpath --match=quasar --linked-by=hub.md --recursive --max-distance=1
+>apple.md
+$ zk list -qfpath --match=quasar --link-to=hub.md --recursive --max-distance=1
+>apple.md
+$ zk list -qfpath --match=quasar --related=hub.md
+>deep.md
+
+# Negation, multiple search terms, and empty intersections remain supported.
+$ zk list -qfpath --sort=path --match=quasar --no-linked-by=hub.md
+>deep.md
+>outside.md
+$ zk list -qfpath --match=quasar --match=matching --linked-by=hub.md
+>apple.md
+$ zk list -qfpath --match=unlinked --linked-by=hub.md

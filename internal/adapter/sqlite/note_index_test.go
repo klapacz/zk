@@ -218,6 +218,22 @@ func TestNoteIndexUpdateWithTags(t *testing.T) {
 	assertSQL(true)
 }
 
+func TestNoteIndexCommitRollsBackAfterAddFailure(t *testing.T) {
+	db, index := testNoteIndex(t)
+	path := "rollback-on-error.md"
+	note := core.Note{Path: path, Checksum: "checksum"}
+
+	err := index.Commit(func(index core.NoteIndex) error {
+		if _, err := index.Add(note, false); err != nil {
+			return err
+		}
+		_, err := index.Add(note, false)
+		return err
+	})
+	assert.Err(t, err, "failed to index the note")
+	assertNotExist(t, db, "SELECT id FROM notes WHERE path = ?", path)
+}
+
 func testNoteIndex(t *testing.T) (*DB, *NoteIndex) {
 	db := testDB(t)
 	return db, NewNoteIndex("", db, &util.NullLogger, "md")

@@ -1,0 +1,37 @@
+$ cd blank
+
+$ printf '%s\n' '---' 'date: 2020-01-02' 'modified: 2020-01-03' '---' '# Assigned' > assigned.md
+$ printf '%s\n' '---' 'date: 2022-01-01' '---' '# Middle' > middle.md
+$ printf '%s\n' '# Undated' > undated.md
+$ zk index --quiet
+$ zk list undated.md -qfcreated > original-created
+
+# A forced index refreshes the explicit date, modified date and displayed metadata.
+$ printf '%s\n' '---' 'date: 2024-06-07' 'modified: 2024-06-08' '---' '# Assigned' > assigned.md
+$ zk index --force --quiet
+$ zk list assigned.md -qf '\{{metadata.date}}|\{{format-date created "%Y-%m-%d"}}|\{{format-date modified "%Y-%m-%d"}}'
+>2024-06-07|2024-06-07|2024-06-08
+
+$ zk list -qfpath --created=2020-01-02
+$ zk list -qfpath --created=2024-06-07
+>assigned.md
+$ zk list -qfpath --modified=2024-06-08
+>assigned.md
+$ zk list assigned.md middle.md -qfpath --sort=created
+>assigned.md
+>middle.md
+
+# Automatic indexing uses the same update path.
+$ printf '%s\n' '---' 'date: 2025-02-03' 'modified: 2025-02-04' '---' '# Assigned' > assigned.md
+$ zk list -qfpath --created=2025-02-03
+>assigned.md
+$ zk list assigned.md -qf '\{{metadata.date}}|\{{format-date created "%Y-%m-%d"}}|\{{format-date modified "%Y-%m-%d"}}'
+>2025-02-03|2025-02-03|2025-02-04
+
+# Reindexing preserves the original creation date of an undated note.
+$ zk list undated.md -qfcreated | diff original-created -
+
+# Adding an explicit date overrides a previously indexed filesystem fallback.
+$ printf '%s\n' '---' 'date: 2023-04-05' '---' '# Undated' > undated.md
+$ zk list undated.md -qfpath --created=2023-04-05
+>undated.md

@@ -51,6 +51,9 @@ type Note struct {
 	Metadata map[string]any
 	// Date of creation.
 	Created time.Time
+	// Whether Created came from a valid frontmatter date. Only explicit dates
+	// replace the creation date of an already indexed note.
+	CreatedFromFrontmatter bool
 	// Date of last modification.
 	Modified time.Time
 	// Checksum of the note content.

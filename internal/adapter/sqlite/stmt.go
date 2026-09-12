@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sync"
@@ -10,6 +11,8 @@ import (
 type LazyStmt struct {
 	query  string
 	create func() (*sql.Stmt, error)
+	ctx    context.Context
+	onRows func(*sql.Rows)
 	stmt   *sql.Stmt
 	err    error
 	once   sync.Once
@@ -35,7 +38,12 @@ func (s *LazyStmt) Exec(args ...any) (sql.Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := stmt.Exec(args...)
+	var res sql.Result
+	if s.ctx == nil {
+		res, err = stmt.Exec(args...)
+	} else {
+		res, err = stmt.ExecContext(s.ctx, args...)
+	}
 	return res, s.wrapErr(err)
 }
 
@@ -44,7 +52,15 @@ func (s *LazyStmt) Query(args ...any) (*sql.Rows, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := stmt.Query(args...)
+	var rows *sql.Rows
+	if s.ctx == nil {
+		rows, err = stmt.Query(args...)
+	} else {
+		rows, err = stmt.QueryContext(s.ctx, args...)
+	}
+	if err == nil && s.onRows != nil {
+		s.onRows(rows)
+	}
 	return rows, s.wrapErr(err)
 }
 
@@ -53,7 +69,10 @@ func (s *LazyStmt) QueryRow(args ...any) (*sql.Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	return stmt.QueryRow(args...), nil
+	if s.ctx == nil {
+		return stmt.QueryRow(args...), nil
+	}
+	return stmt.QueryRowContext(s.ctx, args...), nil
 }
 
 func (s *LazyStmt) wrapErr(err error) error {

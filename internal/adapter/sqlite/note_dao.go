@@ -58,7 +58,8 @@ func NewNoteDAO(tx Transaction, logger util.Logger, extension string) *NoteDAO {
 		// Update the content of a note.
 		updateStmt: tx.PrepareLazy(`
 			UPDATE notes
-			   SET title = ?, lead = ?, body = ?, raw_content = ?, word_count = ?, metadata = ?, checksum = ?, modified = ?
+			   SET title = ?, lead = ?, body = ?, raw_content = ?, word_count = ?, metadata = ?, checksum = ?,
+			       created = CASE WHEN ? THEN ? ELSE created END, modified = ?
 			 WHERE path = ?
 		`),
 
@@ -184,7 +185,7 @@ func (d *NoteDAO) Update(note core.Note) (core.NoteID, error) {
 	metadata := d.metadataToJSON(note)
 	_, err = d.updateStmt.Exec(
 		note.Title, note.Lead, note.Body, note.RawContent, note.WordCount,
-		metadata, note.Checksum, note.Modified, note.Path,
+		metadata, note.Checksum, note.CreatedFromFrontmatter, note.Created, note.Modified, note.Path,
 	)
 	return id, err
 }
@@ -344,15 +345,14 @@ func (d *NoteDAO) FindMinimal(opts core.NoteFindOpts) ([]core.MinimalNote, error
 	for rows.Next() {
 		note, err := d.scanMinimalNote(rows)
 		if err != nil {
-			d.logger.Err(err)
-			continue
+			return notes, err
 		}
 		if note != nil {
 			notes = append(notes, *note)
 		}
 	}
 
-	return notes, nil
+	return notes, rows.Err()
 }
 
 // Find returns all the notes matching the given criteria.
@@ -373,15 +373,14 @@ func (d *NoteDAO) Find(opts core.NoteFindOpts) ([]core.ContextualNote, error) {
 	for rows.Next() {
 		note, err := d.scanNote(rows)
 		if err != nil {
-			d.logger.Err(err)
-			continue
+			return notes, err
 		}
 		if note != nil {
 			notes = append(notes, *note)
 		}
 	}
 
-	return notes, nil
+	return notes, rows.Err()
 }
 
 // parseListFromNullString splits a 0-separated string.
@@ -546,13 +545,23 @@ func (d *NoteDAO) findRows(opts core.NoteFindOpts, selection noteSelection) (*sq
 				args = append(args, escapeLikeTerm(match, '\\'))
 			}
 		case core.MatchStrategyFts:
-			snippetCol = `snippet(fts_match.notes_fts, 2, '<zk:match>', '</zk:match>', '…', 20)`
-			joinClauses = append(joinClauses, "JOIN notes_fts fts_match ON n.id = fts_match.rowid")
-			additionalOrderTerms = append(additionalOrderTerms, `bm25(fts_match.notes_fts, 1000.0, 500.0, 1.0)`)
+			snippetCol = `fts_match.snippet`
+			additionalOrderTerms = append(additionalOrderTerms, `fts_match.rank`)
+			ftsExprs := make([]string, 0, len(opts.Match))
 			for _, match := range opts.Match {
-				whereExprs = append(whereExprs, "fts_match.notes_fts MATCH ?")
+				ftsExprs = append(ftsExprs, "notes_fts MATCH ?")
 				args = append(args, fts5.ConvertQuery(match))
 			}
+			// Keep FTS5 auxiliary functions inside this query, before link
+			// aggregation. OFFSET prevents SQLite from flattening the subquery.
+			joinClauses = append(joinClauses, fmt.Sprintf(`JOIN (
+	SELECT rowid,
+	       snippet(notes_fts, 2, '<zk:match>', '</zk:match>', '…', 20) AS snippet,
+	       bm25(notes_fts, 1000.0, 500.0, 1.0) AS rank
+	  FROM notes_fts
+	 WHERE %s
+	 LIMIT -1 OFFSET 0
+) fts_match ON n.id = fts_match.rowid`, strings.Join(ftsExprs, " AND ")))
 		case core.MatchStrategyRe:
 			for _, match := range opts.Match {
 				whereExprs = append(whereExprs, "n.raw_content REGEXP ?")

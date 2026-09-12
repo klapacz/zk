@@ -100,6 +100,7 @@ func (n *Notebook) ParseNoteWithContent(absPath string, content []byte) (*Note, 
 
 		if t, ok := dateFromFrontmatterKey(note.Metadata, createdKey); ok {
 			note.Created = t
+			note.CreatedFromFrontmatter = true
 		} else if times.HasBirthTime() {
 			note.Created = times.BirthTime()
 		} else {
