@@ -16,6 +16,8 @@ env:
   CGO_ENABLED: 1
 jobs:
   build-linux-intel:
+    # The upstream cross-compilation images are not accessible from forks.
+    if: github.repository == 'zk-org/zk'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -54,6 +56,7 @@ jobs:
           path: zk-${{ steps.vars.outputs.version }}-${{ matrix.tag }}.tar.gz
 
   build-linux-arm:
+    if: github.repository == 'zk-org/zk'
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
@@ -89,6 +92,7 @@ jobs:
           path: zk-${{ steps.vars.outputs.version }}-linux-arm64.tar.gz
 
   build-alpine-intel:
+    if: github.repository == 'zk-org/zk'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -127,6 +131,7 @@ jobs:
           path: zk-${{ steps.vars.outputs.version }}-${{ matrix.tag }}.tar.gz
 
   build-alpine-arm:
+    if: github.repository == 'zk-org/zk'
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
@@ -230,8 +235,43 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: 1.26
+      - name: Test fork regressions
+        run: go test -tags fts5 ./internal/adapter/sqlite
+      - name: Test core indexing regressions
+        run: go test -tags fts5 ./internal/core -run 'Test(IndexTask|DrainMetadataChannels)'
       - name: Build
         run: go build -buildvcs=false -tags "fts5" -ldflags "-X=main.Version=${{ steps.vars.outputs.version }} -X=main.Build=${{ steps.vars.outputs.version }}"
+      - name: Smoke test standalone Windows binary
+        run: |
+          $zk = Join-Path $PWD 'zk.exe'
+          $directory = Join-Path $env:RUNNER_TEMP 'zk smoke with spaces'
+          New-Item "$directory/.zk" -ItemType Directory -Force | Out-Null
+          New-Item "$directory/.zk/config.toml" -ItemType File | Out-Null
+          $originalPath = $env:PATH
+          function Invoke-Zk {
+            & $zk @args
+            if ($LASTEXITCODE -ne 0) { throw "zk failed: $args" }
+          }
+          Push-Location $directory
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $note = "---`ndate: 2020-01-02`n---`n# Note`nquasar Żółw 🐢.`n"
+            Set-Content note.md $note -Encoding utf8
+            Set-Content hub.md "# Hub`n[Note](note.md)`n" -Encoding utf8
+            Invoke-Zk index --quiet
+            Set-Content note.md ($note.Replace('2020-01-02', '2024-06-07')) -Encoding utf8
+            Invoke-Zk index --force --quiet
+            if ((Invoke-Zk list --quiet --format path --created 2024-06-07) -ne 'note.md') {
+              throw 'Updated frontmatter date was not indexed'
+            }
+            if ((Invoke-Zk list --quiet --format path --match quasar --linked-by hub.md) -ne 'note.md') {
+              throw 'Combined text and link search failed'
+            }
+          } finally {
+            $env:PATH = $originalPath
+            Pop-Location
+            Remove-Item $directory -Recurse -Force
+          }
       - name: Compress for upload
         if: startsWith(steps.vars.outputs.version, 'v')
         run: tar -cvzf zk-${{ steps.vars.outputs.version }}-windows-x86_64.tar.gz zk.exe
